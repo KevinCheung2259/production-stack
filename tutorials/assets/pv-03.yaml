@@ -3,7 +3,7 @@ kind: PersistentVolume
 metadata:
   name: test-vllm-pv
   labels:
-    model: "llama3-pv"
+    model: "Captain-Eris_Violet-V0.420-12B-pv"
 spec:
   capacity:
     storage: 50Gi
@@ -12,4 +12,4 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: standard
   hostPath:
-    path: /data/llama3
+    path: /mnt/shared/data/Captain-Eris_Violet-V0.420-12B

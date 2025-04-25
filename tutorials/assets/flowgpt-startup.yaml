@@ -1,0 +1,51 @@
+servingEngineSpec:
+  runtimeClassName: ""
+  modelSpec:
+  - name: "captain"
+    repository: "lmcache/vllm-openai"
+    tag: "2025-04-18"
+    modelURL: "Nitral-AI/Captain-Eris_Violet-V0.420-12B"
+    replicaCount: 2
+
+    requestCPU: 10
+    requestMemory: "16Gi"
+    requestGPU: 1
+
+    pvcStorage: "50Gi"
+    pvcAccessMode:
+      - ReadWriteOnce
+    pvcMatchLabels:
+      model: "Captain-Eris_Violet-V0.420-12B-pv"
+
+    lmcacheConfig:
+      enabled: true
+      cpuOffloadingBufferSize: "200"
+
+    vllmConfig:
+      maxModelLen: 10000
+      enableChunkedPrefill: true
+      enablePrefixCaching: true
+      dtype: "auto"
+      extraArgs: ["--disable-log-requests", 
+                  "--gpu-memory-utilization", "0.9", 
+                  "--served-model-name", "Nitral-AI/Captain-Eris_Violet-V0.420-12B",
+                  "--swap-space", "4",
+                  "--max-num-seqs", "72", 
+                  "--max-num-batched-tokens", "1024",
+                  "--quantization", "fp8",
+                  "--kv-cache-dtype", "fp8",
+                  "--kv-transfer-config", '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}',
+                  ]
+
+routerSpec:
+  repository: "lmcache/lmstack-router"
+  tag: "latest"
+  resources:
+    requests:
+      cpu: "2"
+      memory: "8G"
+    limits:
+      cpu: "2"
+      memory: "8G"
+  routingLogic: "session"  # roundrobin, session
+  sessionKey: "x-user-id"

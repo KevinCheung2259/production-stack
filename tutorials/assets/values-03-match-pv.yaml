@@ -1,10 +1,10 @@
 servingEngineSpec:
   runtimeClassName: ""
   modelSpec:
-  - name: "llama3"
+  - name: "captain"
     repository: "vllm/vllm-openai"
     tag: "latest"
-    modelURL: "meta-llama/Llama-3.1-8B-Instruct"
+    modelURL: "Nitral-AI/Captain-Eris_Violet-V0.420-12B"
     replicaCount: 1
 
     requestCPU: 10
@@ -15,9 +15,8 @@ servingEngineSpec:
     pvcAccessMode:
       - ReadWriteOnce
     pvcMatchLabels:
-      model: "llama3-pv"
+      model: "Captain-Eris_Violet-V0.420-12B-pv"
 
     vllmConfig:
-      maxModelLen: 4096
+      maxModelLen: 10000
 
-    hf_token: <YOUR HF TOKEN>

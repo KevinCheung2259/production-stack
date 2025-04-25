@@ -7,11 +7,14 @@ metadata:
   labels:
   {{- include "chart.routerLabels" . | nindent 4 }}
 spec:
-  type: {{ .Values.routerSpec.serviceType }}
+  type: {{ .Values.routerSpec.serviceType | default "NodePort" }}
   ports:
     - name: "router-sport"
       port: {{ .Values.routerSpec.servicePort }}
       targetPort: {{ .Values.routerSpec.containerPort }}
+      {{- if eq (.Values.routerSpec.serviceType | default "NodePort") "NodePort" }}
+      nodePort: {{ .Values.routerSpec.nodePort }}
+      {{- end }}
       protocol: TCP
   selector:
   {{- include "chart.routerLabels" . | nindent 4 }}

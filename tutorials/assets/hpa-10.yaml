@@ -7,9 +7,9 @@ spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: vllm-llama3-deployment-vllm  # Name of your deployment to scale
+    name: vllm-captain-deployment-vllm  # Name of your deployment to scale
   minReplicas: 1
-  maxReplicas: 2
+  maxReplicas: 4
   metrics:
   - type: Object
     object:
@@ -21,4 +21,4 @@ spec:
         name: default # The namespace where the metric is collected
       target:
         type: Value
-        value: 1  # Scale up if the metric exceeds 1
+        value: 10  # Scale up if the metric exceeds 1

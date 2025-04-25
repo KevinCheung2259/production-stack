@@ -8,6 +8,9 @@ servingEngineSpec:
   labels:
     environment: "test"
     release: "test"
+  # -- Service type and nodePort
+  serviceType: "NodePort"
+  nodePort: 30081
   # vllmApiKey: (optional) api key for securing the vLLM models. Can be either:
   #   - A string containing the token directly (will be stored in a generated secret)
   #   - An object referencing an existing secret:
@@ -233,6 +236,10 @@ routerSpec:
 
   # -- Whether to enable the router service
   enableRouter: true
+
+  # -- Service type and nodePort
+  serviceType: "NodePort"
+  nodePort: 30080
 
   # -- Number of replicas
   replicaCount: 1
