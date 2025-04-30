@@ -3,13 +3,13 @@ kind: PersistentVolume
 metadata:
   name: test-vllm-pv
   labels:
-    model: "Captain-Eris_Violet-V0.420-12B-pv"
+    model: "captain-pv"
 spec:
   capacity:
-    storage: 50Gi
+    storage: 30Gi
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: standard
   hostPath:
-    path: /mnt/shared/data/Captain-Eris_Violet-V0.420-12B
+    path: /mnt/shared/data/captain

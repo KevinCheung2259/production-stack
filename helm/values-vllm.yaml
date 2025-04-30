@@ -4,12 +4,11 @@
 # -- Serving engine configuratoon
 servingEngineSpec:
   enableEngine: true
+  
   # -- Customized labels for the serving engine deployment
   labels:
     environment: "test"
     release: "test"
-  imagePullPolicy: "Always"
-  
   # vllmApiKey: (optional) api key for securing the vLLM models. Can be either:
   #   - A string containing the token directly (will be stored in a generated secret)
   #   - An object referencing an existing secret:
@@ -139,6 +138,7 @@ servingEngineSpec:
 
   # -- Container port
   containerPort: 8000
+
   # -- Service port
   servicePort: 80
 
@@ -147,6 +147,33 @@ servingEngineSpec:
 
   # -- deployment strategy
   strategy: {}
+
+  # -- modelSpec configuration
+  modelSpec:
+  - name: "captain"
+    repository: "vllm/vllm-openai"
+    tag: "latest"
+    modelURL: "Nitral-AI/Captain-Eris_Violet-V0.420-12B"
+    replicaCount: 2
+
+    requestCPU: 10
+    requestMemory: "16Gi"
+    requestGPU: 1
+
+    vllmConfig:
+      maxModelLen: 10000
+      enableChunkedPrefill: true
+      enablePrefixCaching: true
+      dtype: "auto"
+      extraArgs: ["--disable-log-requests", 
+                  "--gpu-memory-utilization", "0.9", 
+                  "--served-model-name", "Nitral-AI/Captain-Eris_Violet-V0.420-12B",
+                  "--swap-space", "4",
+                  "--max-num-seqs", "72", 
+                  "--max-num-batched-tokens", "1024",
+                  "--quantization", "fp8",
+                  "--kv-cache-dtype", "fp8"
+                  ]
 
   # -- Readiness probe configuration
   startupProbe:
@@ -188,18 +215,7 @@ servingEngineSpec:
   #   - key: "node-role.kubernetes.io/control-plane"
   #     operator: "Exists"
   #     effect: "NoSchedule"
-  tolerations:
-    - effect: NoSchedule
-      key: nvidia.com/gpu
-      operator: Exists
-    - effect: NoExecute
-      key: node.kubernetes.io/not-ready
-      operator: Exists
-      tolerationSeconds: 300
-    - effect: NoExecute
-      key: node.kubernetes.io/unreachable
-      operator: Exists
-      tolerationSeconds: 300
+  tolerations: []
 
   # -- RuntimeClassName configuration, set to "nvidia" if the model requires GPU
   runtimeClassName: "nvidia"
@@ -237,121 +253,3 @@ servingEngineSpec:
     #   - ALL
     # -- Read-only root filesystem
     # readOnlyRootFilesystem: true
-
-routerSpec:
-  # -- The docker image of the router. The following values are defaults:
-  repository: "lmcache/lmstack-router"
-  tag: "latest"
-  imagePullPolicy: "Always"
-
-  # -- Whether to enable the router service
-  enableRouter: true
-
-  # -- Service type and nodePort
-  serviceType: "NodePort"
-  nodePort: 30080
-
-  # -- Number of replicas
-  replicaCount: 1
-
-  # -- Container port
-  containerPort: 8000
-
-  # -- Service type
-  serviceType: ClusterIP
-
-  # -- Service port
-  servicePort: 80
-
-  # -- Service discovery mode, supports "k8s" or "static". Defaults to "k8s" if not set.
-  serviceDiscovery: "k8s"
-
-  # -- If serviceDiscovery is set to "static", the comma-separated values below are required. There needs to be the same number of backends and models
-  staticBackends: ""
-  staticModels: ""
-
-  # -- routing logic, could be "roundrobin" or "session"
-  routingLogic: "roundrobin"
-
-  # -- session key if using "session" routing logic
-  sessionKey: ""
-
-  # -- extra router commandline arguments
-  extraArgs: []
-
-  # -- Interval in seconds to scrape the serving engine metrics
-  engineScrapeInterval: 15
-
-  # -- Window size in seconds to calculate the request statistics
-  requestStatsWindow: 60
-
-  # -- deployment strategy
-  strategy: {}
-
-  # vllmApiKey: (optional) api key for securing the vLLM models. Must be an object referencing an existing secret
-  #   secretName: "my-existing-secret"
-  #   secretKey: "vllm-api-key"
-
-  # -- router resource requests and limits
-  resources:
-    requests:
-      cpu: "4"
-      memory: "16G"
-    limits:
-      cpu: "8"
-      memory: "32G"
-
-  # -- Customized labels for the router deployment
-  labels:
-    environment: "router"
-    release: "router"
-
-  ingress:
-    # -- Enable ingress controller resource
-    enabled: false
-
-    # -- IngressClass that will be used to implement the Ingress
-    className: ""
-
-    # -- Additional annotations for the Ingress resource
-    annotations:
-      {}
-      # kubernetes.io/ingress.class: alb
-      # kubernetes.io/ingress.class: nginx
-      # kubernetes.io/tls-acme: "true"
-
-    # The list of hostnames to be covered with this ingress record.
-    hosts:
-      - host: vllm-router.local
-        paths:
-          - path: /
-            pathType: Prefix
-
-    # --  The tls configuration for hostnames to be covered with this ingress record.
-    tls: []
-    #  - secretName: vllm-router-tls
-    #    hosts:
-    #      - vllm-router.local
-
-  # The node selector terms to match the nodes
-  # Example:
-  #   nodeSelectorTerms:
-  #     - matchExpressions:
-  #       - key: nvidia.com/gpu.product
-  #         operator: "In"
-  #         values:
-  #         - "NVIDIA-RTX-A6000"
-  nodeSelectorTerms: []
-
-  # -- TODO: Readiness probe configuration
-  #startupProbe:
-  #  # -- Number of seconds after the container has started before startup probe is initiated
-  #  initialDelaySeconds: 5
-  #  # -- How often (in seconds) to perform the startup probe
-  #  periodSeconds: 5
-  #  # -- Number of times after which if a probe fails in a row, Kubernetes considers that the overall check has failed: the container is not ready
-  #  failureThreshold: 100
-  #   # -- Configuration of the Kubelet http request on the server
-  #  httpGet:
-  #    # -- Path to access on the HTTP server
-  #

@@ -1,0 +1,80 @@
+servingEngineSpec:
+  runtimeClassName: ""
+  modelSpec:
+  - name: "captain"
+    repository: "lmcache/vllm-openai"
+    tag: "2024-04-18"
+    modelURL: "Nitral-AI/Captain-Eris_Violet-V0.420-12B"
+    replicaCount: 2
+
+    requestCPU: 10
+    requestMemory: "16Gi"
+    requestGPU: 1
+
+    pvcStorage: "50Gi"
+    pvcAccessMode:
+      - ReadWriteOnce
+    pvcMatchLabels:
+      model: "captain-pv"
+
+    # # 添加卷挂载点
+    # extraVolumeMounts:
+    #   - name: lmcache-lib
+    #     mountPath: /usr/local/lib/python3.12/dist-packages/lmcache
+    #   - name: vllm-lib
+    #     mountPath: /usr/local/lib/python3.12/dist-packages/vllm
+
+    # # 定义卷
+    # extraVolumes:
+    #   - name: lmcache-lib
+    #     hostPath:
+    #       path: /mnt/shared/cwwu/LMCache/volume/lmcache
+    #       type: Directory
+    #   - name: vllm-lib
+    #     hostPath:
+    #       path: /mnt/shared/cwwu/LMCache/volume/vllm
+    #       type: Directory
+
+    # env:
+    #   - name: LMCACHE_USE_EXPERIMENTAL
+    #     value: "true"
+    #   - name: LMCACHE_CHUNK_SIZE
+    #     value: "128"
+    #   - name: LMCACHE_LOCAL_CPU
+    #     value: "true"
+    #   - name: LMCACHE_SAVE_DECODE_CACHE
+    #     value: "false"
+    
+    lmcacheConfig:
+      enabled: true
+      cpuOffloadingBufferSize: "20"
+
+    vllmConfig:
+      maxModelLen: 10000
+      dtype: "auto"
+      v1: 1
+      extraArgs: ["--disable-log-requests",
+                  "--enable-chunked-prefill",
+                  "--enable-prefix-caching",
+                  "--gpu-memory-utilization", "0.9", 
+                  "--served-model-name", "Nitral-AI/Captain-Eris_Violet-V0.420-12B",
+                  "--swap-space", "4",
+                  "--max-num-seqs", "72", 
+                  "--max-num-batched-tokens", "1024",
+                  "--quantization", "fp8",
+                  "--kv-cache-dtype", "fp8",
+                  # "--kv-transfer-config", "{\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"}"
+                  ]
+
+routerSpec:
+  repository: "lmcache/lmstack-router"
+  tag: "latest"
+  resources:
+    requests:
+      cpu: "2"
+      memory: "8G"
+    limits:
+      cpu: "2"
+      memory: "8G"
+  routingLogic: "session"  # roundrobin, session
+  sessionKey: "x-user-id"

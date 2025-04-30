@@ -11,11 +11,11 @@ servingEngineSpec:
     requestMemory: "16Gi"
     requestGPU: 1
 
-    # pvcStorage: "30Gi"
-    # pvcAccessMode:
-    #   - ReadWriteOnce
-    # pvcMatchLabels:
-    #   model: "captain-pv"
+    pvcStorage: "30Gi"
+    pvcAccessMode:
+      - ReadWriteOnce
+    pvcMatchLabels:
+      model: "captain-pv"
 
     vllmConfig:
       maxModelLen: 10000
@@ -33,19 +33,17 @@ servingEngineSpec:
                   ]
 
 routerSpec:
-  enableRouter: false
-# routerSpec:
-#   # repository: "lmcache/lmstack-router"
-#   # tag: "latest"
-#   repository: "vllm-router"
-#   tag: "2025-04-25"
-#   imagePullPolicy: "IfNotPresent"
-#   resources:
-#     requests:
-#       cpu: "2"
-#       memory: "8G"
-#     limits:
-#       cpu: "2"
-#       memory: "8G"
-#   routingLogic: "session"  # roundrobin, session
-#   sessionKey: "x-user-id"
+  repository: "lmcache/lmstack-router"
+  tag: "latest"
+  # repository: "vllm-router"
+  # tag: "2025-04-25"
+  imagePullPolicy: "IfNotPresent"
+  resources:
+    requests:
+      cpu: "2"
+      memory: "8G"
+    limits:
+      cpu: "2"
+      memory: "8G"
+  routingLogic: "session"  # roundrobin, session
+  sessionKey: "X-Flow-Conversation-Id"

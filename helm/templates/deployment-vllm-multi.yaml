@@ -115,8 +115,18 @@ spec:
           {{- end }}
           {{- if $modelSpec.lmcacheConfig }}
           {{-   if $modelSpec.lmcacheConfig.enabled }}
+          {{-     if hasKey $modelSpec.vllmConfig "v1" }}
+          {{-       if eq (toString $modelSpec.vllmConfig.v1) "1" }}
+          - "--kv-transfer-config"
+          - '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+          {{-       else }}
           - "--kv-transfer-config"
           - '{"kv_connector":"LMCacheConnector","kv_role":"kv_both"}'
+          {{-       end }}
+          {{-     else }}
+          - "--kv-transfer-config"
+          - '{"kv_connector":"LMCacheConnector","kv_role":"kv_both"}'
+          {{-     end }}
           {{-   end }}
           {{- end }}
           {{- if $modelSpec.chatTemplate }}
@@ -127,7 +137,7 @@ spec:
           securityContext:
             {{- toYaml .Values.servingEngineSpec.containerSecurityContext | nindent 12 }}
           {{- end }}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: {{ .Values.servingEngineSpec.imagePullPolicy }}
           env:
           - name: HF_HOME
             {{- if hasKey $modelSpec "pvcStorage" }}
