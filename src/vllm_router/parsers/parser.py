@@ -43,6 +43,10 @@ def validate_args(args):
         raise ValueError(
             "Session key must be provided when using session routing logic."
         )
+    if args.routing_logic == "cache_aware_load_balancing" and args.session_key is None:
+        raise ValueError(
+            "Session key must be provided when using cache_aware_load_balancing routing logic."
+        )
     if args.log_stats and args.log_stats_interval <= 0:
         raise ValueError("Log stats interval must be greater than 0.")
     if args.engine_stats_interval <= 0:
@@ -99,7 +103,7 @@ def parse_args():
         "--routing-logic",
         type=str,
         required=True,
-        choices=["roundrobin", "session"],
+        choices=["roundrobin", "session", "cache_aware_load_balancing"],
         help="The routing logic to use",
     )
     parser.add_argument(
@@ -107,6 +111,12 @@ def parse_args():
         type=str,
         default=None,
         help="The key (in the header) to identify a session.",
+    )
+    parser.add_argument(
+        "--block-reuse-timeout",
+        type=int,
+        default=40,
+        help="The timeout in seconds for KV cache block reuse in cache-aware load balancing router.",
     )
     parser.add_argument(
         "--callbacks",

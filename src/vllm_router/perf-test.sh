@@ -11,11 +11,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 python3 "$SCRIPT_DIR/app.py" --port "$1" \
     --service-discovery static \
     --static-backends "http://localhost:9004,http://localhost:9001,http://localhost:9002,http://localhost:9003" \
-    --static-models "fake_model_name,fake_model_name,fake_model_name,fake_model_name" \
-    --engine-stats-interval 10 \
+    --static-models "Nitral-AI/Captain-Eris_Violet-V0.420-12B,Nitral-AI/Captain-Eris_Violet-V0.420-12B,Nitral-AI/Captain-Eris_Violet-V0.420-12B,Nitral-AI/Captain-Eris_Violet-V0.420-12B" \
+    --engine-stats-interval 15 \
     --log-stats \
-    --routing-logic session \
-    --session-key "x-user-id"
+    --routing-logic cache_aware_load_balancing \
+    --session-key "X-Flow-Conversation-Id"
 
     #--routing-logic roundrobin
 

@@ -25,6 +25,7 @@ from vllm_router.service_discovery import EndpointInfo
 from vllm_router.stats.engine_stats import EngineStats
 from vllm_router.stats.request_stats import RequestStats
 from vllm_router.utils import SingletonABCMeta
+from collections import OrderedDict
 
 logger = init_logger(__name__)
 
@@ -36,21 +37,6 @@ class RoutingLogic(str, enum.Enum):
 
 
 class RoutingInterface(metaclass=SingletonABCMeta):
-    def __init__(self):
-        if not hasattr(self, "_initialized"):
-            self._request_counts = {}
-            self._initialized = True
-
-    def _update_and_print_stats(self, endpoint_url: str):
-        """更新并打印路由统计信息"""
-        self._request_counts[endpoint_url] = self._request_counts.get(endpoint_url, 0) + 1
-        total_requests = sum(self._request_counts.values())
-        logger.info(f"路由统计信息:")
-        for url, count in self._request_counts.items():
-            percentage = (count / total_requests) * 100 if total_requests > 0 else 0
-            logger.info(f"  {url}: {count} 个请求 ({percentage:.2f}%)")
-        logger.info(f"总请求数: {total_requests}")
-
     @abc.abstractmethod
     def route_request(
         self,
@@ -77,7 +63,6 @@ class RoundRobinRouter(RoutingInterface):
     # TODO (ApostaC): when available engines in the endpoints changes, the
     # algorithm may not be "perfectly" round-robin.
     def __init__(self):
-        super().__init__()
         if hasattr(self, "_initialized"):
             return
         self.req_id = 0
@@ -105,7 +90,6 @@ class RoundRobinRouter(RoutingInterface):
         len_engines = len(endpoints)
         chosen = sorted(endpoints, key=lambda e: e.url)[self.req_id % len_engines]
         self.req_id += 1
-        self._update_and_print_stats(chosen.url)
         return chosen.url
 
 
@@ -116,7 +100,6 @@ class SessionRouter(RoutingInterface):
     """
 
     def __init__(self, session_key: str = None):
-        super().__init__()
         if hasattr(self, "_initialized"):
             return
         if session_key is None:
@@ -203,8 +186,26 @@ class SessionRouter(RoutingInterface):
             # Use the hash ring to get the endpoint for the session ID
             url = self.hash_ring.get_node(session_id)
 
-        self._update_and_print_stats(url)
         return url
+    
+
+class LRUCache:
+    def __init__(self, max_size):
+        self.max_size = max_size
+        self.cache = OrderedDict()
+
+    def get(self, key):
+        if key not in self.cache:
+            return None
+        self.cache.move_to_end(key)  # 标记为最近使用
+        return self.cache[key]
+
+    def set(self, key, value):
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        self.cache[key] = value
+        if len(self.cache) > self.max_size:
+            self.cache.popitem(last=False)  # 移除最旧的条目
 
 
 class CacheAwareLoadBalancingRouter(RoutingInterface):
@@ -217,13 +218,9 @@ class CacheAwareLoadBalancingRouter(RoutingInterface):
     """
     
     # KV缓存配置常量
-    DEFAULT_KV_CACHE_SIZE_PER_REQUEST_GB = 0.25  # 每个请求占用的KV缓存大小（GB）
-    DEFAULT_GPU_MEMORY_SIZE_GB = 50  # 单个GPU可用显存大小（GB）
-    DEFAULT_BLOCK_REUSE_TIMEOUT = 40  # KV缓存块复用超时（秒）
+    DEFAULT_BLOCK_REUSE_TIMEOUT = 60  # KV缓存块复用超时（秒）
     
-    def __init__(self, session_key: str = None, kv_cache_size_per_request_gb: float = None, 
-                 gpu_memory_size_gb: float = None, block_reuse_timeout: int = None):
-        super().__init__()
+    def __init__(self, session_key: str = None, block_reuse_timeout: int = None):
         if hasattr(self, "_initialized"):
             return
             
@@ -231,58 +228,15 @@ class CacheAwareLoadBalancingRouter(RoutingInterface):
             raise ValueError("CacheAwareLoadBalancingRouter must be initialized with a session_key")
             
         self.session_key = session_key
-        self.kv_cache_size_per_request_gb = kv_cache_size_per_request_gb or self.DEFAULT_KV_CACHE_SIZE_PER_REQUEST_GB
-        self.gpu_memory_size_gb = gpu_memory_size_gb or self.DEFAULT_GPU_MEMORY_SIZE_GB
         self.block_reuse_timeout = block_reuse_timeout or self.DEFAULT_BLOCK_REUSE_TIMEOUT
         
-        # 会话状态跟踪
-        self.session_last_time: Dict[str, float] = {}  # 每个会话最后访问时间，为了防止dict过大，要定期清理或限制大小
-        self.session_to_engine: Dict[str, str] = {}    # 会话到引擎的映射，为了防止dict过大，要定期清理或限制大小
-        
-        # 引擎访问记录跟踪
-        self.engine_access_history: Dict[str, List[Tuple[str, float]]] = {}  # 每个引擎的会话访问历史 {engine_url: [(session_id, timestamp), ...]}
-        self.max_history_per_engine = 1000  # 每个引擎最多保留的历史记录数
-        
-        # 每个引擎可以容纳的最大会话数
-        self.max_sessions_per_engine = int(self.gpu_memory_size_gb / self.kv_cache_size_per_request_gb)
+        # 会话状态跟踪，使用LRUCache替代普通字典
+        self.session_last_time = LRUCache(max_size=150000)  # 会话最后访问时间 {session_id: timestamp}
+        self.session_to_engine = LRUCache(max_size=150000)  # 会话到引擎的映射 {session_id: engine_url}
+
+        self.req_id = 0  # 请求ID，用于轮询选择
         
         self._initialized = True
-    
-    def _count_intervening_sessions(self, session_id: str, engine_url: str) -> int:
-        """
-        计算当前会话的上一次访问到现在，有多少个不同的会话访问了同一个引擎
-        
-        返回：两次访问之间发生的独立会话数
-        """
-        if engine_url not in self.engine_access_history:
-            return self.max_sessions_per_engine  # 找不到历史记录，假设最大数量
-            
-        history = self.engine_access_history[engine_url]
-        if not history:
-            return self.max_sessions_per_engine
-            
-        # 找到当前会话的上一次访问记录
-        last_session_time = 0
-        current_time = time.time()
-        
-        for i in range(len(history) - 1, -1, -1):
-            s_id, timestamp = history[i]
-            if s_id == session_id:
-                last_session_time = timestamp
-                break
-                
-        # 如果找不到上一次访问记录，或者间隔太久，当作最大会话数处理
-        if last_session_time == 0 or (current_time - last_session_time > self.block_reuse_timeout):
-            return self.max_sessions_per_engine
-            
-        # 统计在上一次访问之后到现在之间访问的独立会话数
-        intervening_sessions = set()
-        
-        for s_id, timestamp in history:
-            if timestamp > last_session_time and s_id != session_id:
-                intervening_sessions.add(s_id)
-                
-        return len(intervening_sessions)
     
     def _predict_cache_hit_rate(self, session_id: str, engine_url: str, 
                                engine_stats: Dict[str, EngineStats]) -> float:
@@ -291,44 +245,35 @@ class CacheAwareLoadBalancingRouter(RoutingInterface):
         
         基于以下因素：
         1. 会话最后访问时间（时间间隔越短，命中率越高）
-        2. 上次访问到现在间隔的独立会话数（中间访问的会话越多，命中率越低）
+        2. 上次访问到现在间隔的独立会话数（中间访问的会话越多，命中率越低）(暂时不考虑)
         
         返回值：预估的命中率（0.0到1.0之间）
         """
         current_time = time.time()
         
         # 如果会话首次访问或未找到记录，返回0（无命中）
-        if session_id not in self.session_last_time:
+        last_time = self.session_last_time.get(session_id)
+        if last_time is None:
             return 0.0
             
-        # 如果当前引擎与上次使用的引擎不同，返回0（无命中）
-        if self.session_to_engine.get(session_id) != engine_url:
+        # 检查会话是否使用过此引擎
+        stored_engine = self.session_to_engine.get(session_id)
+        if stored_engine != engine_url:
             return 0.0
             
         # 计算距离上次访问的时间间隔
-        time_since_last_request = current_time - self.session_last_time[session_id]
+        time_since_last_request = current_time - last_time
         
         # 估计KV缓存命中率
-        # 1. 时间因素：以线性衰减模型估计基于时间的缓存命中率
-        time_factor = min(1.0, time_since_last_request / self.block_reuse_timeout)
-        time_based_hit_rate = max(0.0, 1.0 - time_factor)
+            
+        # 如果在block_reuse_timeout内，认为缓存完全命中
+        if time_since_last_request < self.block_reuse_timeout:
+            hit_rate = 1.0
+            logger.debug(f"会话 {session_id} 在引擎 {engine_url} 的命中率预测: {hit_rate:.2f}")
+            return hit_rate
         
-        # 2. 计算中间会话数因素
-        intervening_sessions = self._count_intervening_sessions(session_id, engine_url)
-        
-        # 根据中间会话数与最大容量的比例估计缓存逐出概率
-        # 使用非线性公式，当中间会话数较少时，命中率仍然很高
-        session_ratio = min(1.0, intervening_sessions / self.max_sessions_per_engine)
-        session_based_hit_rate = max(0.0, 1.0 - pow(session_ratio, 0.7))  # 使用幂函数使曲线更平滑
-        
-        # 综合考虑各因素
-        # 时间因素和会话数因素哪个更低，就以哪个为主
-        final_hit_rate = min(time_based_hit_rate, session_based_hit_rate)
-        
-        logger.debug(f"会话 {session_id} 在引擎 {engine_url} 的命中率预测: 时间因素={time_based_hit_rate:.2f}, " 
-                    f"会话因素={session_based_hit_rate:.2f} (间隔{intervening_sessions}个会话), 最终={final_hit_rate:.2f}")
-        
-        return final_hit_rate
+        # 默认返回0
+        return 0.0
     
     def _calculate_engine_load_score(self, engine_url: str, 
                                     engine_stats: Dict[str, EngineStats], 
@@ -337,6 +282,8 @@ class CacheAwareLoadBalancingRouter(RoutingInterface):
         计算引擎的负载分数
         
         分数越低表示引擎负载越轻
+
+        负载因素：负载得分（正在运行的请求数*0.02 + 排队请求数*0.1）
         """
         if engine_url not in engine_stats:
             return 0.0  # 无统计数据，假设负载为0
@@ -345,111 +292,31 @@ class CacheAwareLoadBalancingRouter(RoutingInterface):
         stats = engine_stats[engine_url]
         
         # 基本负载因素：运行请求数和排队请求数
-        running_load = stats.num_running_requests * 1.0  # 运行中请求权重
-        queuing_load = stats.num_queuing_requests * 1.5  # 排队请求权重（略高）
+        running_load = stats.num_running_requests * 0.02  # 运行中请求权重
+        queuing_load = stats.num_queuing_requests * 0.1  # 排队请求权重（略高）
         
-        # 考虑QPS
-        qps_factor = 0.0
-        if engine_url in request_stats:
-            qps = request_stats[engine_url].qps
-            qps_factor = qps * 0.2  # QPS权重较低
+        # 暂时不考虑QPS
+        # qps_factor = 0.0
+        # if engine_url in request_stats:
+        #     qps = request_stats[engine_url].qps
+        #     qps_factor = qps * 0.2  # QPS权重较低
         
         # 计算总负载分数
-        total_load_score = running_load + queuing_load + qps_factor
+        total_load_score = running_load + queuing_load
         
         return total_load_score
     
     def _update_session_info(self, session_id: str, engine_url: str):
         """
-        更新会话信息和引擎的访问历史
+        更新会话信息，并根据时间间隔触发清理
         """
         current_time = time.time()
         
         # 更新会话最后访问时间
-        self.session_last_time[session_id] = current_time
+        self.session_last_time.set(session_id, current_time)
         
         # 更新会话到引擎的映射
-        self.session_to_engine[session_id] = engine_url
-        
-        # 更新引擎访问历史
-        if engine_url not in self.engine_access_history:
-            self.engine_access_history[engine_url] = []
-            
-        # 添加新的访问记录
-        history = self.engine_access_history[engine_url]
-        history.append((session_id, current_time))
-        
-        # 限制历史记录长度，只保留最近的记录
-        if len(history) > self.max_history_per_engine:
-            # 移除最旧的记录，保留最后max_history_per_engine条
-            self.engine_access_history[engine_url] = history[-self.max_history_per_engine:]
-            
-        # 清理太旧的历史记录
-        self._clean_engine_history(engine_url)
-    
-    def _clean_engine_history(self, engine_url: str):
-        """
-        清理指定引擎上太旧的访问历史记录
-        """
-        if engine_url not in self.engine_access_history:
-            return
-            
-        current_time = time.time()
-        cutoff_time = current_time - self.block_reuse_timeout * 2  # 保留2倍超时时间内的记录
-        
-        history = self.engine_access_history[engine_url]
-        new_history = [(s_id, timestamp) for s_id, timestamp in history if timestamp >= cutoff_time]
-        
-        self.engine_access_history[engine_url] = new_history
-    
-    def _clean_stale_sessions(self):
-        """
-        清理过期会话信息和限制字典大小
-        """
-        current_time = time.time()
-        stale_sessions = []
-        
-        # 清理过期会话（超过block_reuse_timeout的两倍）
-        for session_id, last_time in self.session_last_time.items():
-            if current_time - last_time > self.block_reuse_timeout * 2:  # 双倍超时时间
-                stale_sessions.append(session_id)
-        
-        # 删除过期会话
-        for session_id in stale_sessions:
-            # 移除会话记录
-            self.session_last_time.pop(session_id, None)
-            self.session_to_engine.pop(session_id, None)
-        
-        # 限制字典大小，防止内存泄漏
-        MAX_DICT_SIZE = 10000  # 最大允许的字典大小
-        
-        # 如果字典过大，删除最旧的条目
-        if len(self.session_last_time) > MAX_DICT_SIZE:
-            # 按访问时间排序，保留最近的MAX_DICT_SIZE个会话
-            sorted_sessions = sorted(
-                self.session_last_time.items(),
-                key=lambda x: x[1],  # 按时间戳排序
-                reverse=True  # 降序，最新的在前面
-            )[:MAX_DICT_SIZE]
-            
-            # 重建字典，只保留需要的会话
-            new_session_last_time = {sid: ts for sid, ts in sorted_sessions}
-            new_session_to_engine = {}
-            
-            # 只保留still_active中的条目
-            for sid in new_session_last_time:
-                if sid in self.session_to_engine:
-                    new_session_to_engine[sid] = self.session_to_engine[sid]
-            
-            # 更新字典
-            self.session_last_time = new_session_last_time
-            self.session_to_engine = new_session_to_engine
-            
-            # 清理所有引擎的历史记录
-            for engine_url in list(self.engine_access_history.keys()):
-                self._clean_engine_history(engine_url)
-            
-            logger.info(f"清理会话缓存，从 {len(sorted_sessions) + len(stale_sessions)} 减少到 {len(self.session_last_time)}")
+        self.session_to_engine.set(session_id, engine_url)
     
     def _select_best_engine(self, session_id: str, endpoints: List[EndpointInfo],
                           engine_stats: Dict[str, EngineStats],
@@ -463,8 +330,8 @@ class CacheAwareLoadBalancingRouter(RoutingInterface):
         best_score = float('inf')
         
         # 缓存命中权重因子
-        cache_weight = 0.6  # 60%的权重给缓存命中
-        load_weight = 0.4   # 40%的权重给负载均衡
+        cache_weight = 0.5  # 50%的权重给缓存命中
+        load_weight = 0.5   # 50%的权重给负载均衡
         
         for info in endpoints:
             engine_url = info.url
@@ -497,6 +364,30 @@ class CacheAwareLoadBalancingRouter(RoutingInterface):
             
         return best_engine_url
 
+    def _select_best_engine_new(self, session_id: str, endpoints: List[EndpointInfo],
+                          engine_stats: Dict[str, EngineStats],
+                          request_stats: Dict[str, RequestStats]) -> str:
+        """
+        若缓存命中大于1，则选择该引擎
+        否则，选择根据roundrobin选择的引擎
+        """
+        for info in endpoints:
+            engine_url = info.url
+            
+            # 预测缓存命中率（越高越好）
+            cache_hit_rate = self._predict_cache_hit_rate(session_id, engine_url, engine_stats)
+            
+            # 如果命中率为1，直接返回该引擎
+            if cache_hit_rate >= 1.0:
+                logger.debug(f"会话 {session_id} 缓存命中引擎: {engine_url}")
+                return engine_url
+            
+        # 如果没有命中率为1的引擎，使用roundrobin选择
+        len_engines = len(endpoints)
+        chosen = sorted(endpoints, key=lambda e: e.url)[self.req_id % len_engines]
+        self.req_id += 1
+        return chosen.url
+        
     def route_request(
         self,
         endpoints: List[EndpointInfo],
@@ -510,9 +401,6 @@ class CacheAwareLoadBalancingRouter(RoutingInterface):
         对于有会话ID的请求，会基于KV缓存命中率预测和负载状况进行智能选择
         对于无会话ID的请求，会纯粹基于负载均衡选择引擎
         """
-        # 定期清理过期会话
-        self._clean_stale_sessions()
-        
         # 提取会话ID
         session_id = request.headers.get(self.session_key, None)
         logger.debug(f"Got session id: {session_id}")
@@ -525,12 +413,11 @@ class CacheAwareLoadBalancingRouter(RoutingInterface):
             )
         else:
             # 有会话ID，使用综合策略
-            engine_url = self._select_best_engine(session_id, endpoints, engine_stats, request_stats)
+            engine_url = self._select_best_engine_new(session_id, endpoints, engine_stats, request_stats)
             
             # 更新会话信息
             self._update_session_info(session_id, engine_url)
         
-        self._update_and_print_stats(engine_url)
         return engine_url
 
 
@@ -546,12 +433,11 @@ def initialize_routing_logic(
         return SessionRouter(kwargs.get("session_key"))
     elif routing_logic == RoutingLogic.CACHE_AWARE_LOAD_BALANCING:
         logger.info(f"Initializing cache-aware load balancing routing logic with kwargs: {kwargs}")
-        return CacheAwareLoadBalancingRouter(
+        router = CacheAwareLoadBalancingRouter(
             kwargs.get("session_key"),
-            kwargs.get("kv_cache_size_per_request_gb"),
-            kwargs.get("gpu_memory_size_gb"),
             kwargs.get("block_reuse_timeout")
         )
+        return router
     else:
         raise ValueError(f"Invalid routing logic {routing_logic}")
 

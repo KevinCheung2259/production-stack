@@ -40,7 +40,8 @@ class EngineStats:
         """
         num_running_reqs = 0
         num_queuing_reqs = 0
-        gpu_prefix_cache_hit_rate = 0.0
+        gpu_prefix_cache_hits_total = 0
+        gpu_prefix_cache_queries_total = 0
         gpu_cache_usage_perc = 0.0
 
         for family in text_string_to_metric_families(vllm_scrape):
@@ -49,10 +50,19 @@ class EngineStats:
                     num_running_reqs = sample.value
                 elif sample.name == "vllm:num_requests_waiting":
                     num_queuing_reqs = sample.value
-                elif sample.name == "vllm:gpu_prefix_cache_hit_rate":
-                    gpu_prefix_cache_hit_rate = sample.value
+                elif sample.name == "vllm:gpu_prefix_cache_hits_total":
+                    gpu_prefix_cache_hits_total = sample.value
+                elif sample.name == "vllm:gpu_prefix_cache_queries_total":
+                    gpu_prefix_cache_queries_total = sample.value
                 elif sample.name == "vllm:gpu_cache_usage_perc":
                     gpu_cache_usage_perc = sample.value
+
+        # Calculate hit rate
+        gpu_prefix_cache_hit_rate = (
+            gpu_prefix_cache_hits_total / gpu_prefix_cache_queries_total
+            if gpu_prefix_cache_queries_total > 0
+            else 0.0
+        )
 
         return EngineStats(
             num_running_requests=num_running_reqs,
@@ -86,6 +96,10 @@ class EngineStatsScraper(metaclass=SingletonMeta):
         self.engine_stats: Dict[str, EngineStats] = {}
         self.engine_stats_lock = threading.Lock()
         self.scrape_interval = scrape_interval
+        
+        # Store previous counter values for each engine
+        self.prev_hits: Dict[str, int] = {}
+        self.prev_queries: Dict[str, int] = {}
 
         # scrape thread
         self.running = True
@@ -103,11 +117,52 @@ class EngineStatsScraper(metaclass=SingletonMeta):
         try:
             response = requests.get(url + "/metrics", timeout=self.scrape_interval)
             response.raise_for_status()
-            engine_stats = EngineStats.from_vllm_scrape(response.text)
+            
+            # Parse metrics
+            hits_total = 0
+            queries_total = 0
+            num_running_reqs = 0
+            num_queuing_reqs = 0
+            gpu_cache_usage_perc = 0.0
+
+            for family in text_string_to_metric_families(response.text):
+                for sample in family.samples:
+                    if sample.name == "vllm:num_requests_running":
+                        num_running_reqs = sample.value
+                    elif sample.name == "vllm:num_requests_waiting":
+                        num_queuing_reqs = sample.value
+                    elif sample.name == "vllm:gpu_prefix_cache_hits_total":
+                        hits_total = sample.value
+                    elif sample.name == "vllm:gpu_prefix_cache_queries_total":
+                        queries_total = sample.value
+                    elif sample.name == "vllm:gpu_cache_usage_perc":
+                        gpu_cache_usage_perc = sample.value
+
+            # Calculate hit rate based on the difference between current and previous values
+            prev_hits = self.prev_hits.get(url, 0)
+            prev_queries = self.prev_queries.get(url, 0)
+            
+            hits_diff = hits_total - prev_hits
+            queries_diff = queries_total - prev_queries
+            
+            # Update previous values
+            self.prev_hits[url] = hits_total
+            self.prev_queries[url] = queries_total
+            
+            # Calculate hit rate for this interval
+            gpu_prefix_cache_hit_rate = (
+                hits_diff / queries_diff if queries_diff > 0 else 0.0
+            )
+
+            return EngineStats(
+                num_running_requests=num_running_reqs,
+                num_queuing_requests=num_queuing_reqs,
+                gpu_prefix_cache_hit_rate=gpu_prefix_cache_hit_rate,
+                gpu_cache_usage_perc=gpu_cache_usage_perc,
+            )
         except Exception as e:
             logger.error(f"Failed to scrape metrics from {url}: {e}")
             return None
-        return engine_stats
 
     def _scrape_metrics(self):
         """
@@ -132,6 +187,9 @@ class EngineStatsScraper(metaclass=SingletonMeta):
             for old_url in old_urls:
                 if old_url not in collected_engine_stats:
                     del self.engine_stats[old_url]
+                    # Clean up previous values for removed endpoints
+                    self.prev_hits.pop(old_url, None)
+                    self.prev_queries.pop(old_url, None)
             for url, stats in collected_engine_stats.items():
                 self.engine_stats[url] = stats
 
