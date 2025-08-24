@@ -1007,7 +1007,7 @@ class LatencyBaseRouter(RoutingInterface):
             url = endpoint.url
             if url in request_stats:
                 request_stat = request_stats[url]
-                
+
                 # 根据延迟类型选择相应的延迟指标
                 if self.latency_type == "e2e":
                     latency = request_stat.avg_latency
@@ -1015,12 +1015,19 @@ class LatencyBaseRouter(RoutingInterface):
                     latency = request_stat.avg_itl
                 else:  # ttft
                     latency = request_stat.ttft
-                
-                if latency is not None:
+
+                if latency is not None and latency >= 0:
                     if latency < best_latency:
                         best_latency = latency
                         candidate_engines = [url]
                     elif latency == best_latency:
+                        candidate_engines.append(url)
+                else:
+                    # 如果延迟信息不可用或无效，将其视为候选（延迟为0）
+                    if 0 < best_latency:
+                        best_latency = 0
+                        candidate_engines = [url]
+                    elif best_latency == 0:
                         candidate_engines.append(url)
             else:
                 # 如果没有延迟统计信息，将其视为候选（延迟为0）
