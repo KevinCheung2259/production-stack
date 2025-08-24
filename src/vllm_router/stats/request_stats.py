@@ -319,6 +319,8 @@ class RequestStatsMonitor(metaclass=SingletonMeta):
                 avg_dec_len = -1
 
             if engine_url in self.latency_monitors:
+                # Remove outdated latency records even if no new values arrive.
+                self.latency_monitors[engine_url].update_no_value(current_time)
                 avg_lat = self.latency_monitors[engine_url].get_average()
             else:
                 avg_lat = -1
