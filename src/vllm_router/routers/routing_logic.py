@@ -796,7 +796,7 @@ class ELRARRouter(RoutingInterface):
     def _norm_load(self, pending_tokens: int, engine_capacity_tokens_per_s: float) -> float:
         cap = float(engine_capacity_tokens_per_s or 0.0)
         if cap <= 1e-6:
-            return 10.0  # 无容量时视为极高负载
+            return 0.0  # 无容量时视为极低负载
         seconds = float(pending_tokens) / cap
         # 可选缩放
         return seconds / max(self.load_scale_s, 1e-6)
