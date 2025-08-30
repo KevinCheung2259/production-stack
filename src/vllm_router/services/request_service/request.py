@@ -182,6 +182,30 @@ async def route_general_request(
     request_body = await request.body()
     request_json = await request.json()  # TODO (ApostaC): merge two awaits into one
 
+    def _estimate_request_tokens(data: dict) -> int:
+        """Rough estimation of request token length for ELRAR routing.
+
+        This function approximates the total tokens of the incoming request by
+        summing the length of prompt/messages and the requested generation
+        tokens. It does not rely on any tokenizer to keep it lightweight.
+        """
+        prompt_tokens = 0
+        try:
+            if isinstance(data.get("prompt"), str):
+                prompt_tokens = len(data.get("prompt", ""))
+            elif isinstance(data.get("messages"), list):
+                for msg in data.get("messages", []):
+                    if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                        prompt_tokens += len(msg.get("content", ""))
+        except Exception:
+            prompt_tokens = 0
+        max_tokens = int(
+            data.get("max_tokens", data.get("max_completion_tokens", 0)) or 0
+        )
+        return prompt_tokens + max_tokens
+
+    request_token_length = _estimate_request_tokens(request_json)
+
     if request.query_params:
         request_endpoint = request.query_params.get("id")
     else:
@@ -281,7 +305,12 @@ async def route_general_request(
             logger.info(f"Failed to get engine states from Gateway: {e}")
             pass
         server_url, routing_method = request.app.state.router.route_request(
-            endpoints, engine_stats, request_stats, request, engine_states
+            endpoints,
+            engine_stats,
+            request_stats,
+            request,
+            engine_states,
+            request_token_length,
         )
     else:
         server_url, routing_method = request.app.state.router.route_request(
