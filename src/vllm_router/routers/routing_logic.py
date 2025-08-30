@@ -704,7 +704,7 @@ class ELRARRouter(RoutingInterface):
         # 会话亲和历史
         self._session_last_engine: Dict[str, str] = {}
         self._session_last_ts_ms: Dict[str, int] = {}
-        
+
         # 低开销会话过期清理：最小堆 (last_ts, session_id)
         self._session_heap: List[Tuple[int, str]] = []
         # 会话保留窗口（默认5分钟）与清理频率（默认每64个请求清理一次）
@@ -717,6 +717,10 @@ class ELRARRouter(RoutingInterface):
         except Exception:
             self._session_clean_every = 64
         self._req_counter = 0
+
+        # 本地追踪引擎状态更新时间戳及未被网关统计的pending tokens
+        self._engine_state_ts: Dict[str, int] = {}
+        self._pending_tokens_local: Dict[str, int] = {}
 
         self._initialized = True
 
@@ -855,12 +859,22 @@ class ELRARRouter(RoutingInterface):
         request_stats: Dict[str, RequestStats],
         request: Request,
         engine_states: Optional[Dict[str, Dict]] = None,
-    ) -> Tuple[str, str]:        
+        request_token_length: int = 0,
+    ) -> Tuple[str, str]:
         session_id = request.headers.get(self.session_key, None)
 
         # 优先使用调用方传入的 engine_states
         if isinstance(engine_states, dict) and engine_states:
             states = engine_states
+            # 调整pending tokens，若状态未更新则叠加本地记录
+            for eng_id, st in states.items():
+                ts = int(st.get("timestamp_ms", 0) or 0)
+                last_ts = self._engine_state_ts.get(eng_id)
+                if last_ts is None or ts != last_ts:
+                    self._engine_state_ts[eng_id] = ts
+                    self._pending_tokens_local[eng_id] = 0
+                st["pending_tokens_total"] = int(st.get("pending_tokens_total", 0) or 0) + \
+                    self._pending_tokens_local.get(eng_id, 0)
         else:
             logger.info("No engine states provided, using qps routing")
             url = self._qps_routing(endpoints, request_stats)
@@ -897,6 +911,18 @@ class ELRARRouter(RoutingInterface):
             self._session_last_ts_ms[session_id] = now_ms
             # 推入最小堆，配合懒惰删除处理重复更新
             heapq.heappush(self._session_heap, (now_ms, session_id))
+
+        # 记录未被网关反映的pending tokens
+        chosen_engine_id = None
+        for ep, st in candidates:
+            if ep.url == best_url:
+                chosen_engine_id = st.get("engine_id") or ep.url
+                break
+        if chosen_engine_id is not None and request_token_length > 0:
+            self._pending_tokens_local[chosen_engine_id] = (
+                self._pending_tokens_local.get(chosen_engine_id, 0)
+                + int(request_token_length)
+            )
 
         routing_method = "elrar_scored"
         return best_url, routing_method
@@ -1129,6 +1155,7 @@ class WeightBaseRouter(RoutingInterface):
         request_stats: Dict[str, RequestStats],
         request: Request,
         engine_states: Optional[Dict[str, Dict]] = None,
+        request_token_length: int = 0,
     ) -> Tuple[str, str]:
         """
         根据权重将请求路由到相应的engine
