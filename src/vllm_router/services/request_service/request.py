@@ -202,6 +202,9 @@ async def route_general_request(
         max_tokens = int(
             data.get("max_tokens", data.get("max_completion_tokens", 0)) or 0
         )
+        # 换算成大致的token数量
+        prompt_tokens = prompt_tokens / 4
+        max_tokens = max_tokens / 4
         return prompt_tokens + max_tokens
 
     request_token_length = _estimate_request_tokens(request_json)
